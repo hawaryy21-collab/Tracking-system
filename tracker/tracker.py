@@ -4,67 +4,38 @@ import numpy as np
 from ultralytics import YOLO
 import torchvision.models as models
 import torchvision.transforms as transforms
-from torchvision.models import ResNet18_Weights
 
-# -----------------------------
-# Models
-# -----------------------------
-
+# ----- Models -----
 yolo = YOLO("yolov8n.pt")
-
-resnet = models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+resnet = models.resnet18(pretrained=True)
 feature_net = torch.nn.Sequential(*list(resnet.children())[:-1])
 feature_net.eval()
 
-# -----------------------------
-# Parameters (Tunable)
-# -----------------------------
+# ----- Parameters -----
+SIMILARITY_THRESHOLD = 0.75   # minimum score to consider tracked
 
-SIMILARITY_THRESHOLD = 0.75
-EMA_ALPHA = 0.25        # Vector update rate (0.1–0.3 good)
-TRACK_UPDATE_CONFIDENCE = 0.80
-
-# -----------------------------
-# Image preprocessing
-# -----------------------------
-
+# ----- Preprocessing -----
 transform = transforms.Compose([
     transforms.ToPILImage(),
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
-    )
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])
 ])
 
-# -----------------------------
-# Feature extractor
-# -----------------------------
-
 def extract_features(img):
+    """Extract normalized feature vector from an image crop."""
+    if img.size == 0:
+        return None
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img_tensor = transform(img_rgb).unsqueeze(0)
     with torch.no_grad():
-        img = transform(img).unsqueeze(0)
-        vec = feature_net(img).squeeze().numpy()
-
-        # Normalize vector
-        vec = vec / (np.linalg.norm(vec) + 1e-6)
-
+        vec = feature_net(img_tensor).squeeze().numpy()
+    vec = vec / (np.linalg.norm(vec) + 1e-6)
     return vec
 
-# -----------------------------
-# EMA vector update
-# -----------------------------
-
-def update_target_vector(old_vec, new_vec, alpha=EMA_ALPHA):
-    return alpha * new_vec + (1 - alpha) * old_vec
-
-# -----------------------------
-# Camera
-# -----------------------------
-
+# ----- Main loop -----
 cap = cv2.VideoCapture(0)
-
 if not cap.isOpened():
     print("Camera not detected")
     exit()
@@ -72,141 +43,60 @@ if not cap.isOpened():
 print("Press S to select object")
 
 target_vector = None
-tracking_active = False
 
 while True:
     ret, frame = cap.read()
     if not ret:
         break
 
-    display_frame = frame.copy()
-
-    # -------------------------
-    # If object not selected
-    # -------------------------
+    display = frame.copy()
 
     if target_vector is None:
-        cv2.putText(
-            display_frame,
-            "Press S to select object",
-            (20, 40),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0, 255, 255),
-            2
-        )
-
+        cv2.putText(display, "Press S to select object", (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
     else:
-        # -------------------------
-        # YOLO Detection
-        # -------------------------
+        # Detect objects with YOLO
+        results = yolo(frame)[0]
+        boxes = results.boxes.xyxy.cpu().numpy() if results.boxes is not None else []
 
-        result = yolo(frame)[0]
-
-        boxes = result.boxes.xyxy.cpu().numpy()
-
-        best_box = None
-        best_score = -1
-        best_vec = None
+        best_box, best_score = None, -1
 
         for box in boxes:
             x1, y1, x2, y2 = map(int, box)
-
             crop = frame[y1:y2, x1:x2]
-
-            if crop.size == 0:
-                continue
-
             vec = extract_features(crop)
-
-            score = np.dot(target_vector, vec)
-
+            if vec is None:
+                continue
+            score = np.dot(target_vector, vec)   # cosine similarity
             if score > best_score:
                 best_score = score
                 best_box = (x1, y1, x2, y2)
-                best_vec = vec
-
-        # -------------------------
-        # Tracking Decision
-        # -------------------------
 
         if best_box is not None and best_score > SIMILARITY_THRESHOLD:
-
-            tracking_active = True
-
-            # Draw tracking box
-            cv2.rectangle(
-                display_frame,
-                best_box[:2],
-                best_box[2:],
-                (0, 255, 0),
-                3
-            )
-
-            cv2.putText(
-                display_frame,
-                f"Track {best_score:.2f}",
-                (best_box[0], best_box[1] - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 255, 0),
-                2
-            )
-
-            # -------------------------
-            # Update stored vector (EMA memory learning)
-            # -------------------------
-
-            if best_vec is not None:
-                target_vector = update_target_vector(
-                    target_vector,
-                    best_vec,
-                    EMA_ALPHA
-                )
-
-                # Re-normalize
-                target_vector = target_vector / (np.linalg.norm(target_vector) + 1e-6)
-
+            # Draw green box
+            cv2.rectangle(display, best_box[:2], best_box[2:], (0, 255, 0), 3)
+            cv2.putText(display, f"Track {best_score:.2f}",
+                        (best_box[0], best_box[1]-10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         else:
-            tracking_active = False
+            cv2.putText(display, "Object lost", (20, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-            cv2.putText(
-                display_frame,
-                "Object lost",
-                (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 0, 255),
-                2
-            )
-
-    # -------------------------
-    # Show frame
-    # -------------------------
-
-    cv2.imshow("Object Tracker", display_frame)
-
+    cv2.imshow("Object Tracker", display)
     key = cv2.waitKey(1)
-
-    # -------------------------
-    # Object selection (press S)
-    # -------------------------
 
     if key == ord('s'):
         box = cv2.selectROI("Select Object", frame, False)
         cv2.destroyWindow("Select Object")
-
         x, y, w, h = box
-        crop = frame[int(y):int(y+h), int(x):int(x+w)]
+        if w > 0 and h > 0:
+            crop = frame[int(y):int(y+h), int(x):int(x+w)]
+            vec = extract_features(crop)
+            if vec is not None:
+                target_vector = vec   # store the initial vector – never updated again
+                print("Object selected")
 
-        if crop.size != 0:
-            target_vector = extract_features(crop)
-            tracking_active = True
-
-            print("Object selected")
-
-    # Exit
-    if key == 27:
+    if key == 27:  # ESC
         break
 
 cap.release()
