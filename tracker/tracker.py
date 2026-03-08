@@ -6,78 +6,132 @@ import torchvision.models as models
 import torchvision.transforms as transforms
 from torchvision.models import ResNet18_Weights
 
-# Load models
+# Load YOLO model
 yolo = YOLO("yolov8n.pt")
-cnn = torch.nn.Sequential(*list(models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1).children())[:-1]).eval()
 
-# Image transform
+# Load ResNet18 as feature extractor
+resnet = models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+feature_net = torch.nn.Sequential(*list(resnet.children())[:-1])
+feature_net.eval()
+
+# Image preprocessing
 transform = transforms.Compose([
     transforms.ToPILImage(),
-    transforms.Resize((224, 224)),
+    transforms.Resize((224,224)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transforms.Normalize(
+        mean=[0.485,0.456,0.406],
+        std=[0.229,0.224,0.225]
+    )
 ])
 
-def get_vector(img):
+# Convert image to feature vector
+def extract_features(img):
     with torch.no_grad():
-        vec = cnn(transform(img).unsqueeze(0)).squeeze().numpy()
-        return vec / (np.linalg.norm(vec) + 1e-6)
+        img = transform(img).unsqueeze(0)
+        vec = feature_net(img).squeeze().numpy()
+        vec = vec / (np.linalg.norm(vec) + 1e-6)
+    return vec
 
-# Start capture
+# Start camera
 cap = cv2.VideoCapture(0)
 
 if not cap.isOpened():
-    print("Error: Could not open video capture.")
+    print("Camera not detected")
     exit()
 
-ret, frame = cap.read()
-if not ret or frame is None or frame.shape[0] == 0 or frame.shape[1] == 0:
-    print("Error: Failed to capture initial frame. Check camera connection.")
-    cap.release()
-    exit()
+print("Press S to select object")
 
-# Select object
-bbox = cv2.selectROI("Select", frame, False)
-cv2.destroyWindow("Select")
-
-selected_crop = frame[int(bbox[1]):int(bbox[1]+bbox[3]), int(bbox[0]):int(bbox[0]+bbox[2])]
-if selected_crop.size == 0:
-    print("Error: Selected crop is empty.")
-    cap.release()
-    cv2.destroyAllWindows()
-    exit()
-
-selected_vec = get_vector(selected_crop)
+target_vector = None
 
 while True:
+
     ret, frame = cap.read()
-    if not ret: break
+    if not ret:
+        break
 
-    results = yolo(frame)[0]
-    boxes = results.boxes.xyxy.cpu().numpy()
+    # If object not selected yet
+    if target_vector is None:
 
-    best_box, best_sim = None, -1
+        cv2.putText(frame,
+                    "Press S to select object",
+                    (20,40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0,255,255),
+                    2)
 
-    for box in boxes:
-        x1, y1, x2, y2 = map(int, box)
-        crop = frame[y1:y2, x1:x2]
-        if crop.size == 0: continue
-
-        vec = get_vector(crop)
-        sim = np.dot(selected_vec, vec)
-
-        if sim > best_sim:
-            best_sim = sim
-            best_box = (x1, y1, x2, y2)
-
-    if best_box and best_sim > 0.5:
-        cv2.rectangle(frame, best_box[:2], best_box[2:], (0, 255, 0), 3)
-        cv2.putText(frame, "Tracking", (best_box[0], best_box[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
     else:
-        cv2.putText(frame, "Object Disappeared", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
-    cv2.imshow("Tracker", frame)
-    if cv2.waitKey(1) == 27: break
+        # Detect objects with YOLO
+        result = yolo(frame)[0]
+        boxes = result.boxes.xyxy.cpu().numpy()
+
+        best_box = None
+        best_score = -1
+
+        for box in boxes:
+
+            x1, y1, x2, y2 = map(int, box)
+
+            crop = frame[y1:y2, x1:x2]
+            if crop.size == 0:
+                continue
+
+            vec = extract_features(crop)
+
+            # Cosine similarity
+            score = np.dot(target_vector, vec)
+
+            if score > best_score:
+                best_score = score
+                best_box = (x1, y1, x2, y2)
+
+        # Draw best match
+        if best_box and best_score > 0.62:
+
+            cv2.rectangle(frame,
+                          best_box[:2],
+                          best_box[2:],
+                          (0,255,0),
+                          3)
+
+            cv2.putText(frame,
+                        "Tracking",
+                        (best_box[0], best_box[1]-10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        (0,255,0),
+                        2)
+
+        else:
+            cv2.putText(frame,
+                        "Object lost",
+                        (20,40),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        (0,0,255),
+                        2)
+
+    cv2.imshow("Object Tracker", frame)
+
+    key = cv2.waitKey(1)
+
+    # Select object
+    if key == ord('s'):
+
+        box = cv2.selectROI("Select Object", frame, False)
+        cv2.destroyWindow("Select Object")
+
+        x,y,w,h = box
+        crop = frame[int(y):int(y+h), int(x):int(x+w)]
+
+        if crop.size != 0:
+            target_vector = extract_features(crop)
+
+    # Exit
+    if key == 27:
+        break
 
 cap.release()
 cv2.destroyAllWindows()
