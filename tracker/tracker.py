@@ -105,13 +105,7 @@ while True:
                         2)
 
         else:
-            cv2.putText(frame,
-                        "Object lost",
-                        (20,40),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1,
-                        (0,0,255),
-                        2)
+           
 
     cv2.imshow("Object Tracker", frame)
 
@@ -135,4 +129,5 @@ while True:
 
 cap.release()
 cv2.destroyAllWindows()
+
 
