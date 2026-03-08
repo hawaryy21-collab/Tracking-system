@@ -88,7 +88,7 @@ while True:
                 best_box = (x1, y1, x2, y2)
 
         # Draw best match
-        if best_box and best_score > 0.62:
+        if best_box and best_score > 0.682:
 
             cv2.rectangle(frame,
                           best_box[:2],
@@ -135,3 +135,4 @@ while True:
 
 cap.release()
 cv2.destroyAllWindows()
+
