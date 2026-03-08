@@ -10,7 +10,7 @@ resnet = models.resnet18(pretrained=True)
 feature_net = torch.nn.Sequential(*list(resnet.children())[:-1])
 feature_net.eval()
 
-SIMILARITY_THRESHOLD = 0.75
+SIMILARITY_THRESHOLD = 0.7
 TRACK_UPDATE_CONFIDENCE = 0.85
 ADAPTATION_RATE = 0.3
 
@@ -100,3 +100,4 @@ while True:
 
 cap.release()
 cv2.destroyAllWindows()
+
