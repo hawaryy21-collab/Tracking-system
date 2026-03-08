@@ -1,5 +1,5 @@
 # Tracking-system
-real-time object tracker that can follow a specific object in a live webcam feed.
+real time object tracker that can follow a specific object in a live webcam feed.
 ## idea
 
 1. User selects object in first frame
